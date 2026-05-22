@@ -2,7 +2,6 @@ services:
 
   app:
     build: .
-    container_name: url-shortener-app
     environment:
       PORT: 8000
       DB_HOST: postgres

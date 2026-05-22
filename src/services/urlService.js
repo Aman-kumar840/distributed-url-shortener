@@ -1,4 +1,4 @@
-const pool = require("../config/db");
+const { pool } = require("../config/db");
 const base62 = require("../utils/base62");
 const redisClient = require("../config/redis");
 
@@ -51,48 +51,45 @@ const createShortUrl = async (longUrl) => {
 
 
 const getLongUrl = async (shortCode, ip, userAgent) => {
+  // 1. Try to get the URL from the Redis cache first
+  let longUrl = await redisClient.get(shortCode);
 
-  const cachedUrl = await redisClient.get(shortCode);
-
-  if (cachedUrl) {
-    console.log("⚡ Cache HIT");
-  } else {
+  if (!longUrl) {
     console.log("🐢 Cache MISS — hitting DB");
+    
+    // 2. If it's not in Redis, find it in Postgres
+    const result = await pool.query(
+      `SELECT * FROM urls WHERE short_code = $1`,
+      [shortCode]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    longUrl = result.rows[0].long_url;
+
+    // 3. Save it to Redis for the next person (expires in 1 hour)
+    await redisClient.set(shortCode, longUrl, { EX: 3600 });
+  } else {
+    console.log("⚡ Cache HIT");
   }
 
-  // Get full row
-  const result = await pool.query(
-    `SELECT * FROM urls WHERE short_code = $1`,
-    [shortCode]
-  );
+  // 4. Drop a quick note in a Redis List about the click.
+  // We do NOT wait for Postgres here!
+  const clickData = {
+    shortCode,
+    ip,
+    userAgent,
+    timestamp: new Date().toISOString()
+  };
+  
+  // lPush adds this note to a queue named "click_logs"
+  await redisClient.lPush("click_logs", JSON.stringify(clickData));
 
-  if (result.rows.length === 0) {
-    return null;
-  }
-
-  const url = result.rows[0];
-
-  // 🔥 Increment click_count atomically
-  await pool.query(
-    `UPDATE urls SET click_count = click_count + 1 WHERE id = $1`,
-    [url.id]
-  );
-
-  // 🔥 Store analytics row
-  await pool.query(
-    `INSERT INTO url_clicks (url_id, ip_address, user_agent)
-     VALUES ($1, $2, $3)`,
-    [url.id, ip, userAgent]
-  );
-
-  // Cache if needed
-  if (!cachedUrl) {
-    await redisClient.set(shortCode, url.long_url, { EX: 3600 });
-  }
-
-  return url.long_url;
+  // 5. Send the user to their destination instantly
+  return longUrl;
 };
-
 
 /**
  * Get analytics / stats

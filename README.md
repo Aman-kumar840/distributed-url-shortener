@@ -1,208 +1,138 @@
 # 🚀 Distributed URL Shortener
 
-A production-style distributed URL shortening service built using:
+A production-ready, highly concurrent distributed URL shortening service built using:
 
-- Node.js + Express  
-- PostgreSQL  
-- Redis  
-- Docker  
-- NGINX  
+- Node.js + Express
+- PostgreSQL
+- Redis
+- Docker
+- NGINX
 
-This project demonstrates backend system design concepts such as caching, container networking, service health monitoring, analytics tracking, and reverse proxy configuration.
-
----
-
-## 📦 Features
-
-- Generate short URLs
-- Redirect using short codes
-- Track total clicks
-- Track unique visitors (IP-based)
-- Redis caching (Cache HIT / MISS logging)
-- Detailed analytics endpoint
-- Health check endpoint (Postgres + Redis monitoring)
-- Retry logic for service startup
-- Fully Dockerized multi-container architecture
-- NGINX reverse proxy setup
+This project demonstrates advanced backend system design concepts, specifically horizontal scaling, decoupling reads from writes via asynchronous background workers, Redis queuing, and reverse proxy load balancing.
 
 ---
 
-## 🏗 System Architecture
+# 📦 Core Features
 
-```
+- **Horizontal Scalability:** NGINX load balances traffic across multiple dynamically spun-up Node.js containers.
+- **Asynchronous Analytics (Zero-Blocking):** Click tracking is decoupled from the redirect flow. Analytics are pushed to a Redis queue and processed by a background worker, preventing PostgreSQL row-locking bottlenecks during high traffic.
+- **Lightning Fast Redirects:** Redis acts as the primary read layer for short codes.
+- **Detailed Analytics:** Track total clicks, unique visitors (IP-based), and recent click timestamps.
+- **Self-Healing Infrastructure:** Health check endpoints and service retry logic ensure the app waits for Postgres and Redis to be fully ready before accepting traffic.
+
+---
+
+# 🏗 System Architecture
+
+```plaintext
 Client
    ↓
-NGINX (Reverse Proxy)
-   ↓
-Node.js Application (API Layer)
-   ↓
-PostgreSQL (Persistent Storage)
-   ↔
-Redis (Caching Layer)
+NGINX (Reverse Proxy / Load Balancer)
+   ↓ (least_conn distribution)
+
+[ Node App 1 ]  [ Node App 2 ]  [ Node App 3 ]
+
+   ↓ (Fast Read)        ↓ (Async Write)
+
+Redis (Cache)        Redis List (Queue: "click_logs")
+                        ↓
+                 [ Background Worker ]
+                        ↓ (Bulk Insert/Update)
+
+                 PostgreSQL (Persistent Storage)
 ```
 
-### Request Flow
+---
 
-1. Client sends request
-2. NGINX forwards request to Node app
-3. App checks Redis cache
-4. If cache MISS → fetch from PostgreSQL
-5. Cache result in Redis
-6. Track click analytics
-7. Return response
+# ⚡ The "Zero-Blocking" Request Flow
+
+1. Client requests a short URL redirect.
+2. NGINX routes the request to the Node app with the least active connections.
+3. App fetches the long URL directly from Redis (Cache HIT).
+4. App pushes click data (IP, User Agent, Timestamp) to a Redis Queue and immediately redirects the user.
+5. In the background, the Analytics Worker wakes up, pops batches of clicks from the Redis Queue, and securely writes them to PostgreSQL.
 
 ---
 
-## ⚙️ Tech Stack
+# ⚙️ Tech Stack
 
-| Layer            | Technology            |
-|------------------|----------------------|
-| Backend          | Node.js + Express    |
-| Database         | PostgreSQL           |
-| Cache            | Redis                |
-| Containerization | Docker               |
-| Reverse Proxy    | NGINX                |
+| Layer | Technology |
+|------|------|
+| Backend | Node.js + Express |
+| Database | PostgreSQL |
+| Cache & Queue | Redis |
+| Containerization | Docker |
+| Load Balancer | NGINX |
 
 ---
 
-## 🐳 How to Run (Only 1 Terminal Required)
+# 🐳 How to Run
 
-### 1️⃣ Clone the repository
+## 1️⃣ Clone the Repository
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/distributed-url-shortener.git
 cd distributed-url-shortener
 ```
 
-### 2️⃣ Start the application
+---
+
+## 2️⃣ Start the Cluster (Scaled out to 3 instances)
 
 ```bash
-docker-compose up --build
+docker-compose up --build --scale app=3
 ```
 
-Wait until you see:
+Wait until you see the background workers and servers boot up:
 
-```
+```plaintext
+🔥 Connected to Redis
+✅ Connected to PostgreSQL
+👷 Analytics Worker started in the background
 🚀 Server running on port 8000
 ```
 
-Application will run at:
+The NGINX load balancer will now accept traffic at:
 
-```
+```plaintext
 http://localhost:8000
 ```
 
 ---
 
-## 🧪 API Testing Guide
+# 🧪 API Testing Guide
 
-You can use the same terminal or open a new one.
-
-### 🔹 Health Check
-
-```bash
-curl http://localhost:8000/health
-```
-
-Example response:
-
-```json
-{
-  "status": "OK",
-  "services": {
-    "postgres": "UP",
-    "redis": "UP"
-  }
-}
-```
-
----
-
-### 🔹 Create Short URL
+## 🔹 Create Short URL
 
 ```bash
 curl -X POST http://localhost:8000/api/url/shorten \
 -H "Content-Type: application/json" \
--d '{"longUrl":"https://google.com"}'
-```
-
-Example response:
-
-```json
-{
-  "shortUrl": "http://localhost:8000/1",
-  "shortCode": "1"
-}
+-d '{"longUrl":"https://github.com/amankumar"}'
 ```
 
 ---
 
-### 🔹 Redirect
+## 🔹 Redirect (Test the Load Balancer)
 
 ```bash
-curl http://localhost:8000/1
+curl -i http://localhost:8000/1
 ```
+
+(Run this multiple times and check your Docker logs to see NGINX routing the request to different app containers!)
 
 ---
 
-### 🔹 Get URL Analytics
+## 🔹 Get URL Analytics
 
 ```bash
 curl http://localhost:8000/api/url/1/stats
 ```
 
-Example response:
-
-```json
-{
-  "shortCode": "1",
-  "longUrl": "https://google.com",
-  "totalClicks": 5,
-  "uniqueVisitors": 3,
-  "recentClicks": [
-    {
-      "ip_address": "127.0.0.1",
-      "user_agent": "curl/8.0.1",
-      "clicked_at": "2026-02-18T07:30:00.000Z"
-    }
-  ]
-}
-```
-
 ---
 
-## 🛑 Stop the Application
+# 📂 Project Structure
 
-Press:
-
-```
-CTRL + C
-```
-
-Then clean containers:
-
-```bash
-docker-compose down -v
-```
-
----
-
-## 🖥 Terminal Setup
-
-Minimum required: **1 terminal**
-
-Recommended professional workflow:
-
-| Terminal   | Purpose |
-|------------|----------|
-| Terminal 1 | `docker-compose up --build` (view logs) |
-| Terminal 2 | API testing using curl |
-
----
-
-## 📂 Project Structure
-
-```
+```plaintext
 distributed-url-shortener/
 │
 ├── src/
@@ -210,8 +140,16 @@ distributed-url-shortener/
 │   │   ├── db.js
 │   │   └── redis.js
 │   ├── controllers/
+│   │   └── urlController.js
+│   ├── middleware/
+│   │   └── rateLimiter.js
 │   ├── routes/
+│   │   ├── healthRoutes.js
+│   │   └── urlRoutes.js
 │   ├── services/
+│   │   └── urlService.js
+│   ├── workers/
+│   │   └── analyticsWorker.js
 │   ├── app.js
 │   └── server.js
 │
@@ -219,80 +157,24 @@ distributed-url-shortener/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── init.sql
-├── .dockerignore
 └── README.md
 ```
 
 ---
 
-## 🧠 Scalability Considerations
+# 🧠 Concepts Demonstrated
 
-This system can scale horizontally by:
-
-- Running multiple Node.js instances behind NGINX
-- Using Redis for high-speed caching
-- Using PostgreSQL indexing for optimized queries
-- Adding load balancing
-- Moving to managed cloud services (AWS / GCP / Azure)
-- Using CDN for global distribution
+- Decoupling Reads from Writes: Preventing DB locking via background workers.
+- Message Queuing: Using Redis Lists (`lPush`, `rPop`) to handle bursts of traffic.
+- Container Orchestration: Dynamically scaling Node instances without port collisions.
+- Reverse Proxy Load Balancing: Distributing load using NGINX `least_conn`.
+- Database Indexing: Optimizing PostgreSQL lookups for Base62 short codes.
 
 ---
 
-## 🚀 Future Improvements
+# 👨‍💻 Author
 
-- JWT authentication for private links
-- Expiration support for short URLs
-- Rate limiting
-- Admin dashboard
-- Custom short codes
-- Cloud deployment (AWS EC2 / Render / Railway)
-- Kubernetes-based scaling
-- Metrics with Prometheus + Grafana
+## Aman Kumar
 
----
-
-## 📚 Concepts Demonstrated
-
-- REST API Design
-- Database indexing
-- Redis caching strategy
-- Service retry logic
-- Docker networking
-- Reverse proxy configuration
-- Health monitoring
-- Basic system design principles
-
----
-
-## 👨‍💻 Author
-
-**Aman Kumar**
-
----
-
-## 🧾 .dockerignore
-
-Create a file named `.dockerignore` in the root directory and add:
-
-```
-node_modules
-npm-debug.log
-.git
-.gitignore
-.env
-```
-
-This prevents unnecessary files from being copied into the Docker image and keeps it lightweight.
-
----
-
-## 🔥 Summary
-
-This project demonstrates:
-
-- Multi-container backend architecture  
-- Caching layer integration  
-- Analytics tracking  
-- Health monitoring  
-- Reverse proxy configuration  
-- Dockerized production-style setup  
+- LinkedIn: https://www.linkedin.com/in/aman-kumar-016927308/
+- GitHub: https://github.com/Aman-kumar840
