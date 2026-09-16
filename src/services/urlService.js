@@ -1,6 +1,6 @@
 const { pool } = require("../config/db");
 const base62 = require("../utils/base62");
-const redisClient = require("../config/redis");
+const { redisClient } = require("../config/redis");
 
 /**
  * Create a short URL (Collision-safe)
